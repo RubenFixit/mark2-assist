@@ -33,6 +33,14 @@ set -euo pipefail
 # shellcheck source=lib/common.sh
 source "$(dirname "$0")/lib/common.sh"
 
+# shellcheck source=lib/hardware-test.sh
+source "$(dirname "$0")/lib/hardware-test.sh"
+
+# systemctl --user must target the same user who owns the audio session.
+if [ "$EUID" -eq 0 ]; then
+    echo "Run this test as the logged-in Mark II user, without sudo." >&2
+    exit 1
+fi
 check_not_root
 setup_paths
 
@@ -70,7 +78,7 @@ result() {
 pause() {
     if [ "$AUTO" = false ]; then
         echo ""
-        read -rp "  Press Enter to continue..."
+        read -rp "  Press Enter to continue..." || exit 1
         echo ""
     fi
 }
@@ -78,12 +86,13 @@ pause() {
 ask_result() {
     # ask_result "Did it work?" → returns 0 for yes, 1 for no
     local prompt="$1"
+    local ans
     if [ "$AUTO" = true ]; then
         echo -e "  ${YELLOW}[AUTO]${NC} Skipping manual check: ${prompt}"
         return 2  # skip
     fi
     echo ""
-    read -rp "  ${prompt} [y/n/s=skip]: " ans
+    read -rp "  ${prompt} [y/n/s=skip]: " ans || exit 1
     case "${ans,,}" in
         y) return 0 ;;
         n) return 1 ;;
@@ -95,7 +104,7 @@ ask_result() {
 # BANNER
 # =============================================================================
 
-clear
+clear || true
 echo -e "${CYAN}"
 echo '    __  ___           __      ________     ___              _      __ '
 echo '   /  |/  /___ ______/ /__   /  _/  _/    /   |  __________(_)____/ /_'
@@ -126,9 +135,12 @@ echo ""
 echo -e "${YELLOW}  Tests 3–8 require your attention — follow the prompts.${NC}"
 echo ""
 if [ "$AUTO" = false ]; then
-    read -rp "  Press Enter to start the hardware test..." _dummy
+    read -rp "  Press Enter to start the hardware test..." _dummy || exit 1
     echo ""
 fi
+
+# Register cleanup before any service changes. EXIT covers errors and EOF too.
+hw_install_cleanup
 
 # =============================================================================
 # TEST 1: SJ201 service
@@ -161,7 +173,7 @@ fi
 echo "  Waiting for XMOS XVF-3510 and vocalfusion module (up to 15 seconds)..."
 VOCAL_OK=false
 for i in $(seq 1 15); do
-    if lsmod 2>/dev/null | grep -q "vocalfusion"; then
+    if MOD_NAME=$(hw_loaded_vocalfusion_module); then
         echo "  Ready after ${i}s."
         VOCAL_OK=true
         break
@@ -178,15 +190,16 @@ fi
 
 # Check VocalFusion kernel module loaded (module name uses underscore)
 if [ "$VOCAL_OK" = "true" ]; then
-    MOD_NAME=$(lsmod | grep vocalfusion | awk '{print $1}')
     result "vocalfusion kernel module" PASS "loaded (${MOD_NAME})"
 else
-    result "vocalfusion kernel module" FAIL "not loaded after 15s — check dmesg for errors"
+    result "vocalfusion kernel module" FAIL "none of ${HW_VOCALFUSION_MODULES[*]} loaded after 15s — check dmesg for errors"
 fi
 
 # =============================================================================
 # TEST 2: Audio devices
 # =============================================================================
+
+hw_stop_conflicts
 
 section "2. Audio Devices (ALSA)"
 
@@ -207,11 +220,11 @@ else
 fi
 
 # Find the correct device names
-MIC_DEV=$(arecord -L 2>/dev/null | grep -i "plughw.*sj201\|plughw.*CARD=sj201" | head -1)
+MIC_DEV=$(arecord -L 2>/dev/null | grep -i "plughw.*sj201\|plughw.*CARD=sj201" | head -1) || MIC_DEV=""
 if [ -z "$MIC_DEV" ]; then
     MIC_DEV="plughw:CARD=sj201,DEV=1"
 fi
-SPK_DEV=$(aplay -L 2>/dev/null | grep -i "plughw.*sj201\|plughw.*CARD=sj201" | head -1)
+SPK_DEV=$(aplay -L 2>/dev/null | grep -i "plughw.*sj201\|plughw.*CARD=sj201" | head -1) || SPK_DEV=""
 if [ -z "$SPK_DEV" ]; then
     SPK_DEV="plughw:CARD=sj201,DEV=0"
 fi
@@ -229,7 +242,9 @@ echo "  Two tests in one recording — no need to record twice."
 echo ""
 echo "  When you press Enter, recording starts immediately (4 seconds)."
 echo "  Speak clearly — e.g. count 'one... two... three... four...'"
-read -rp "  Press Enter when ready to record..." _dummy
+if [ "$AUTO" = false ]; then
+    read -rp "  Press Enter when ready to record..." _dummy || exit 1
+fi
 echo "  🎤 Recording now..."
 echo ""
 
@@ -269,8 +284,8 @@ PYEOF
         sox "$MIC_RECORDING" -r 48000 -c 2 "$MIC_RECORDING_48" 2>/dev/null
         timeout 6 aplay -D plughw:CARD=sj201,DEV=0 "$MIC_RECORDING_48" 2>/dev/null || true
     fi
-    ask_result "Could you roughly hear what you said? (quality will be poor — that is normal)"
-    _rt_ans=$?
+    _rt_ans=0
+    ask_result "Could you roughly hear what you said? (quality will be poor — that is normal)" || _rt_ans=$?
     case "$_rt_ans" in
         0) result "Mic → Speaker roundtrip" PASS;  RECFILE_PLAYED=true ;;
         1) result "Mic → Speaker roundtrip" FAIL "no recognisable audio — check XMOS routing"; RECFILE_PLAYED=false ;;
@@ -292,7 +307,9 @@ else
     echo "  Mic roundtrip did not confirm playback — running separate speaker test."
     echo "  Will play a 440 Hz test tone through the speaker (2 seconds)."
     echo ""
-    read -rp "  Press Enter to play the test tone — listen for a beep..." _dummy
+    if [ "$AUTO" = false ]; then
+        read -rp "  Press Enter to play the test tone — listen for a beep..." _dummy || exit 1
+    fi
     echo ""
     TONEFILE="/tmp/mark2-tone-test.wav"
     python3 - "$TONEFILE" << 'PYEOF'
@@ -313,7 +330,9 @@ with wave.open(sys.argv[1], 'w') as f:
     f.writeframes(struct.pack('<' + 'h' * len(stereo), *stereo))
 PYEOF
     if timeout 5 aplay -D plughw:CARD=sj201,DEV=0 "$TONEFILE" 2>/dev/null; then
-        case $(ask_result "Did you hear a tone from the speaker?") in
+        _answer=0
+        ask_result "Did you hear a tone from the speaker?" || _answer=$?
+        case "$_answer" in
             0) result "Speaker audio output" PASS "tone heard" ;;
             1) result "Speaker audio output" FAIL "aplay ran but no sound — check TAS5806 amp" ;;
             2) result "Speaker audio output" SKIP ;;
@@ -335,7 +354,9 @@ else
     echo "  Testing LED ring — NeoPixel WS2812 on GPIO12..."
     echo "  The ring will cycle through red, green, blue and white."
     echo ""
-    read -rp "  Press Enter to start — watch the LED ring on the device..." _dummy
+    if [ "$AUTO" = false ]; then
+        read -rp "  Press Enter to start — watch the LED ring on the device..." _dummy || exit 1
+    fi
     echo ""
 
     # LED ring is NeoPixel WS2812 on GPIO12 (D12) — NOT I2C
@@ -371,7 +392,9 @@ PYEOF
 )
 
     if echo "$LED_RESULT" | grep -q "LED_OK"; then
-        case $(ask_result "Did the LED ring cycle through red/green/blue/white?") in
+        _answer=0
+        ask_result "Did the LED ring cycle through red/green/blue/white?" || _answer=$?
+        case "$_answer" in
             0) result "LED ring" PASS "NeoPixel GPIO12 OK, colors seen" ;;
             1) result "LED ring" FAIL "NeoPixel write OK but no visible colors" ;;
             2) result "LED ring" SKIP ;;
@@ -400,35 +423,21 @@ else
     echo "  Press each button when prompted."
     echo ""
 
-    # Check if button events are available via evdev
-    EVDEV_DEV=$(find /dev/input -name 'event*' 2>/dev/null | while read -r dev; do
-        udevadm info "$dev" 2>/dev/null | grep -qi "sj201\|button\|gpio" && echo "$dev" && break
-    done)
-
-    if [ -n "$EVDEV_DEV" ]; then
+    EVDEV_DEV=$(hw_button_device) || EVDEV_DEV=""
+    if [ -z "$EVDEV_DEV" ]; then
+        result "Button input device" FAIL "SJ201 button device not found in /sys/class/input"
+    elif ! command -v evtest &>/dev/null; then
+        result "Button press detected" SKIP "evtest missing — install with: sudo apt install evtest"
+    elif [ ! -r "$EVDEV_DEV" ]; then
+        result "Button press detected" FAIL "cannot read $EVDEV_DEV — check input group membership"
+    else
         result "Button input device" PASS "$EVDEV_DEV"
-        echo "  Input device found: $EVDEV_DEV"
-        echo ""
-        echo "  When you press Enter, you have 8 seconds to press any button."
-        echo "  Press volume up, volume down, or the action button (center of LED ring)."
-        read -rp "  Press Enter when ready..." _dummy
-        echo "  Waiting for button press..."
-        if timeout 8 bash -c "evtest '$EVDEV_DEV' 2>/dev/null | grep -m1 'type 1'" 2>/dev/null | grep -q "type 1"; then
+        echo "  You have 8 seconds to press volume up/down, mic mute, or action."
+        read -rp "  Press Enter when ready..." _dummy || exit 1
+        if hw_button_pressed "$EVDEV_DEV"; then
             result "Button press detected" PASS
         else
-            result "Button press detected" FAIL "no event received — did you press a button?"
-        fi
-    else
-        # Fallback: check GPIO input events
-        if ls /dev/input/event* &>/dev/null; then
-            echo "  Input devices found: $(ls /dev/input/event* | xargs)"
-            case $(ask_result "Did button presses cause any reaction?") in
-                0) result "Hardware buttons" PASS ;;
-                1) result "Hardware buttons" FAIL "no button events" ;;
-                2) result "Hardware buttons" SKIP ;;
-            esac
-        else
-            result "Hardware buttons" FAIL "no input devices found"
+            result "Button press detected" FAIL "no key press received — check device permissions or another grab"
         fi
     fi
 fi
@@ -441,7 +450,9 @@ section "7. Touchscreen & Display"
 echo "  Checking DSI display connection and touch controller."
 echo "  Look at the Mark II screen — it should be on (even if blank/black)."
 echo ""
-read -rp "  Press Enter to continue..." _dummy
+if [ "$AUTO" = false ]; then
+    read -rp "  Press Enter to continue..." _dummy || exit 1
+fi
 echo ""
 
 # Check DRM/KMS sees the display
@@ -450,7 +461,8 @@ if ls /sys/class/drm/card*/card*-DSI* &>/dev/null 2>&1; then
     STATUS=$(cat "${DSI_DEV}/status" 2>/dev/null || echo "unknown")
     result "DSI display" PASS "found: $(basename $DSI_DEV) status=${STATUS}"
 elif ls /sys/class/drm/ &>/dev/null; then
-    CARDS=$(ls /sys/class/drm/ | grep -v "^renderD\|^version\|^card[0-9]$" | head -5 | xargs)
+    CARDS=$(find /sys/class/drm -mindepth 1 -maxdepth 1 -printf '%f\n' |
+        awk '!/^(renderD|version|card[0-9]+$)/ && count++ < 5' | xargs)
     result "DSI display" FAIL "DSI not found — DRM devices: ${CARDS:-none}"
 else
     result "DSI display" FAIL "no DRM/KMS devices found"
@@ -459,11 +471,13 @@ fi
 # Check touch input device
 TOUCH_DEV=$(find /dev/input -name 'event*' 2>/dev/null | while read -r dev; do
     udevadm info "$dev" 2>/dev/null | grep -qi "touch\|waveshare\|DSI\|ft5" && echo "$dev" && break
-done)
+done) || TOUCH_DEV=""
 
 if [ -n "$TOUCH_DEV" ]; then
     result "Touch input device" PASS "$TOUCH_DEV"
-    case $(ask_result "Is the display lit up and visible on the screen?") in
+    _answer=0
+    ask_result "Is the display lit up and visible on the screen?" || _answer=$?
+    case "$_answer" in
         0) result "Display visible" PASS ;;
         1) result "Display visible" FAIL "display is off or blank — check DSI ribbon cable" ;;
         2) result "Display visible" SKIP ;;
@@ -489,7 +503,9 @@ if [ -n "$BACKLIGHT" ]; then
         echo 10 | sudo tee "${BACKLIGHT}/brightness" > /dev/null 2>/dev/null || true
         sleep 2
         echo "$BL_CUR" | sudo tee "${BACKLIGHT}/brightness" > /dev/null 2>/dev/null || true
-        case $(ask_result "Did the display dim and then return to normal?") in
+        _answer=0
+        ask_result "Did the display dim and then return to normal?" || _answer=$?
+        case "$_answer" in
             0) result "Backlight dim/restore" PASS ;;
             1) result "Backlight dim/restore" FAIL ;;
             2) result "Backlight dim/restore" SKIP ;;
@@ -508,6 +524,8 @@ section "9. I2C Bus"
 # Install i2c-tools if missing
 if ! command -v i2cdetect &>/dev/null; then
     info "Installing i2c-tools..."
+    # The invoking user owns MARK2_LOG; only apt-get needs root.
+    # shellcheck disable=SC2024
     sudo apt-get install -y --no-install-recommends i2c-tools >> "${MARK2_LOG:-/dev/null}" 2>&1 || true
 fi
 
@@ -580,3 +598,6 @@ else
 fi
 
 echo ""
+
+# Report diagnostic failures to callers; EXIT always restores service state.
+[ "$FAIL" -eq 0 ]
