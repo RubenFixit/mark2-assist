@@ -12,6 +12,8 @@ the hardware setup reboot.
 
 ## Usage
 
+The test temporarily stops active button/audio user services and sockets, then restores their running/stopped states on normal exit, errors, Ctrl-C, TERM, and HUP. Enabled/disabled/masked settings are unchanged.
+
 ```bash
 # Interactive (recommended)
 ./mark2-hardware-test.sh
@@ -78,7 +80,7 @@ sudo pip3 install adafruit-circuitpython-neopixel --break-system-packages
 - **sj201.service active** — `systemctl --user is-active sj201.service`
   Should be `active (exited)` — oneshot service that runs at boot.
 - **Poll for vocalfusion module** — waits up to 15 seconds, checking each
-  second until `vocalfusion_soundcard` appears in `lsmod`. Shows how many
+  second until a name from `HW_VOCALFUSION_MODULES` exists in `/sys/module`. Reports the matched module name and how many
   seconds it took. Avoids false failures from fixed sleep timers.
 - **XVF3510 firmware file** — `/opt/sj201/app_xvf3510_int_spi_boot_v4_2_0.bin`
 
@@ -139,8 +141,7 @@ LED control uses `adafruit-circuitpython-neopixel` + `adafruit-blinka`:
 
 ### 6. Hardware Buttons
 
-Tests volume up/down/action buttons via Linux evdev (`/dev/input/event0`).
-Uses `evtest` to detect `EV_KEY` (type 1) events. Waits 8 seconds.
+Finds the SJ201 button event device dynamically through `/sys/class/input/event*/device/name` (`soc:sj201_buttons` or `sj201_buttons`). Tests volume up/down, mic mute, and action buttons with `evtest`, requiring an actual `EV_KEY` press (`value 1`) during the eight-second window.
 
 The buttons are registered by `sj201-buttons-overlay.dtbo` as
 `/devices/platform/soc/soc:sj201_buttons/input/input0`.
