@@ -4,8 +4,7 @@
 #
 # Architecture (simplified):
 #   1. Chromium opens Home Assistant directly (homeassistant.local or HA_URL)
-#   2. face.html runs as a transparent always-on-top overlay window
-#      showing the Mark II face animation (idle/listen/think/speak)
+#   2. face.html overlay (optional, FACE_OVERLAY=true) — see note below
 #   3. mark2-httpd.py handles only /screen-on and /screen-off (backlight)
 #
 # No local HTTP proxy. No combined.html. No iframe embedding.
@@ -14,6 +13,7 @@
 # Config (~/.config/mark2/config):
 #   HA_URL=http://192.168.1.100:8123   (optional — defaults to homeassistant.local)
 #   SCREEN_BLANK_SECONDS=300           (optional — screensaver timeout, default 5 min)
+#   FACE_OVERLAY=true                  (optional — experimental, default off, see #37)
 # =============================================================================
 exec >> /tmp/mark2-kiosk.log 2>&1
 echo "[$(date)] kiosk.sh starting"
@@ -24,6 +24,7 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u)
 CONFIG="${HOME}/.config/mark2/config"
 HA_URL="http://homeassistant.local"
 SCREEN_BLANK_SECONDS=300
+FACE_OVERLAY=false
 [ -f "$CONFIG" ] && source "$CONFIG"
 
 # Detect Wayland socket
@@ -66,12 +67,15 @@ python3 "${HOME}/mark2-httpd.py" >> /tmp/mark2-httpd.log 2>&1 &
 echo "[$(date)] Starting kiosk (HA: ${HA_URL})"
 sleep 5
 
-# ── Face overlay ─────────────────────────────────────────────────────────────
-# Launch face.html as a transparent always-on-top window.
-# labwc window rule keeps it on top; Weston kiosk shell ignores it.
-# Uses a separate Chromium profile so it doesn't conflict with the main window.
+# ── Face overlay (experimental, off by default) ──────────────────────────────
+# Weston's kiosk shell makes every toplevel window fullscreen and shows one at
+# a time — it has no always-on-top stacking and no window transparency
+# (--enable-transparent-visuals is X11-only). A second Chromium window running
+# face.html therefore covers the HA dashboard with a white/opaque page
+# regardless of its CSS (issue #37). Only enable this with a compositor that
+# supports overlay windows.
 FACE_HTML="${HOME}/mark2-assist/templates/face.html"
-if [ -f "$FACE_HTML" ]; then
+if [ "${FACE_OVERLAY}" = "true" ] && [ -f "$FACE_HTML" ]; then
     chromium \
         --app="file://${FACE_HTML}" \
         --window-size=800,480 \
@@ -89,6 +93,8 @@ if [ -f "$FACE_HTML" ]; then
         --noerrdialogs \
         >> /tmp/mark2-face.log 2>&1 &
     echo "[$(date)] Face overlay started"
+else
+    echo "[$(date)] Face overlay disabled (FACE_OVERLAY=${FACE_OVERLAY})"
 fi
 
 # ── Main HA kiosk window ──────────────────────────────────────────────────────

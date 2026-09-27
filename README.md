@@ -43,6 +43,11 @@ fully local (Whisper + Piper), Nabu Casa, OpenAI, Claude, or any HA conversation
 
 > **Note:** Pi 5 untested. Pi 3 not supported (insufficient RAM).
 
+> **Hardware warning:** The SJ201 board has an identified failure mechanism that can cause
+> audio/mic faults which no software configuration will fix. See the OVOS community thread
+> [SJ-201 failure mechanism identified](https://community.openconversational.ai/t/sj-201-sj201-failure-mechanism-identified/15299)
+> ([issue #38](https://github.com/andlo/mark2-assist/issues/38)).
+
 ---
 
 ## How it works
@@ -66,8 +71,12 @@ To use a specific dashboard, set it as the default for the HA user used on the k
 or set `HA_URL` in `~/.config/mark2/config` to point to a specific dashboard path.
 
 ### Face animation
-A transparent Chromium window sits on top of the HA dashboard as an always-on-top overlay.
-It shows the Mark II face animation:
+> **Experimental — disabled by default.** Weston's kiosk shell shows one fullscreen window
+> at a time and does not support transparent overlay windows, so the face window would cover
+> the HA dashboard ([issue #37](https://github.com/andlo/mark2-assist/issues/37)).
+> Set `FACE_OVERLAY=true` in `~/.config/mark2/config` only if you want to experiment.
+
+When enabled, a Chromium window runs `face.html` and shows the Mark II face animation:
 
 <p align="center">
   <img src="docs/images/face-states.png" alt="Mark II face animation states: idle, listening, thinking, speaking, error">
@@ -181,6 +190,9 @@ HA_TOKEN=eyJ...
 
 # Screensaver timeout in seconds (0 = never blank)
 SCREEN_BLANK_SECONDS=300
+
+# Face animation overlay — experimental, covers the dashboard under Weston (see #37)
+FACE_OVERLAY=false
 ```
 
 ---
@@ -225,6 +237,8 @@ journalctl --user -u lva -f
 ```
 
 ### Face not appearing
+The face overlay is off by default — set `FACE_OVERLAY=true` in `~/.config/mark2/config`
+(experimental, see #37). Then check:
 ```bash
 cat /tmp/mark2-face.log
 cat /tmp/mark2-face-event.json
